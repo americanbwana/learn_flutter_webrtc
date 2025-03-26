@@ -1,14 +1,18 @@
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../providers/livekit_provider.dart';
-import '../models/room_config.dart';
+import 'package:flutter/material.dart'; // Provides UI components
+import 'package:flutter_riverpod/flutter_riverpod.dart'; // State management library
+import '../providers/livekit_provider.dart'; // Manages LiveKit connection and state
+import '../providers/message_provider.dart'; // Manages messages sent and received in the room
+import '../models/room_config.dart'; // Configuration for connecting to a LiveKit room
 
+/// The main screen for the LiveKit video room.
+/// This screen allows users to connect to a room, send/receive messages, and view the connection status.
 class VideoRoomScreen extends ConsumerStatefulWidget {
-  final String livekitUrl;
-  final String roomName;
-  final String participantName;
-  final String token;
+  final String livekitUrl; // The URL of the LiveKit server
+  final String roomName; // The name of the room to join
+  final String participantName; // The name of the participant
+  final String token; // The JWT token for authentication
 
+  /// Constructor for the VideoRoomScreen.
   const VideoRoomScreen({
     super.key,
     required this.livekitUrl,
@@ -21,26 +25,86 @@ class VideoRoomScreen extends ConsumerStatefulWidget {
   ConsumerState<VideoRoomScreen> createState() => _VideoRoomScreenState();
 }
 
+/// The state for the VideoRoomScreen.
+/// Manages the UI and interactions for the video room.
 class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
+  final TextEditingController _messageController =
+      TextEditingController(); // Controller for the message input field
+  final ScrollController _scrollController =
+      ScrollController(); // Controller for the scrolling message list
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  /// Sends a message via the LiveKit data channel.
+  void _sendMessage() {
+    final message = _messageController.text.trim();
+    if (message.isNotEmpty) {
+      // Send the message via the data channel
+      ref.read(liveKitProvider.notifier).sendDataToRoom(message);
+
+      // Add the message to the local messages list
+      ref.read(messagesProvider.notifier).addMessage("You: $message");
+
+      // Clear the input field
+      _messageController.clear();
+
+      // Scroll to the bottom
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scrollController.hasClients) {
+          _scrollController.animateTo(
+            _scrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    // Watch our connection status to rebuild when it changes
-    final connectionStatus = ref.watch(connectionStatusProvider);
-    // Watch for any error messages
-    final errorMessage = ref.watch(errorMessageProvider);
+    final connectionStatus = ref.watch(
+      connectionStatusProvider,
+    ); // Watches the connection status
+    final errorMessage = ref.watch(
+      errorMessageProvider,
+    ); // Watches for error messages
+
+    // Listen for changes to the list of messages to scroll to bottom
+    ref.listen<List<String>>(messagesProvider, (previous, current) {
+      if (current.isNotEmpty &&
+          (previous == null || current.length > previous.length)) {
+        // A new message was added, scroll to the bottom after the UI updates
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scrollController.hasClients) {
+            _scrollController.animateTo(
+              _scrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+            );
+          }
+        });
+      }
+    });
 
     return Scaffold(
       appBar: AppBar(
-        // Show different titles based on connection status
-        title: Text(_getTitleForStatus(connectionStatus)),
+        title: Text(
+          _getTitleForStatus(connectionStatus),
+        ), // Displays the connection status
         actions: [
-          // Show connect/disconnect button based on status
-          _buildConnectionButton(connectionStatus),
+          _buildConnectionButton(
+            connectionStatus,
+          ), // Displays the connect/disconnect button
         ],
       ),
       body: Column(
         children: [
-          // Show any error messages at the top
           if (errorMessage != null)
             Container(
               color: Colors.red.shade100,
@@ -51,14 +115,63 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
                 style: const TextStyle(color: Colors.red),
               ),
             ),
-          // Show different content based on connection status
-          Expanded(child: _buildContentForStatus(connectionStatus)),
+          Expanded(
+            child: Consumer(
+              builder: (context, ref, _) {
+                final messages = ref.watch(
+                  messagesProvider,
+                ); // Watch the messages list
+
+                if (messages.isEmpty) {
+                  return const Center(
+                    child: Text('No messages yet. Start a conversation!'),
+                  );
+                }
+
+                return ListView.builder(
+                  controller: _scrollController,
+                  itemCount: messages.length,
+                  itemBuilder: (context, index) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(
+                        vertical: 4,
+                        horizontal: 8,
+                      ),
+                      child: Text(messages[index]),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _messageController,
+                    decoration: const InputDecoration(
+                      hintText: "Enter your message",
+                      border: OutlineInputBorder(),
+                    ),
+                    onSubmitted: (_) => _sendMessage(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: _sendMessage,
+                  child: const Text("Send"),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
   }
 
-  /// Returns the appropriate title based on connection status
+  /// Returns the appropriate title based on the connection status.
   String _getTitleForStatus(LiveKitConnectionStatus status) {
     switch (status) {
       case LiveKitConnectionStatus.disconnected:
@@ -72,9 +185,8 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
     }
   }
 
-  /// Builds the connect/disconnect button based on current status
+  /// Builds the connect/disconnect button based on the connection status.
   Widget _buildConnectionButton(LiveKitConnectionStatus status) {
-    // If we're connecting, show a disabled button
     if (status == LiveKitConnectionStatus.connecting) {
       return const IconButton(
         onPressed: null,
@@ -82,18 +194,15 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
       );
     }
 
-    // If we're connected, show disconnect button
     if (status == LiveKitConnectionStatus.connected) {
       return IconButton(
         onPressed: () {
-          // Get our LiveKit notifier and disconnect
           ref.read(liveKitProvider.notifier).disconnect();
         },
         icon: const Icon(Icons.link_off),
       );
     }
 
-    // Otherwise, show connect button
     return IconButton(
       onPressed: () {
         final config = RoomConfig(
@@ -107,19 +216,5 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
       },
       icon: const Icon(Icons.link),
     );
-  }
-
-  /// Builds the main content area based on connection status
-  Widget _buildContentForStatus(LiveKitConnectionStatus status) {
-    switch (status) {
-      case LiveKitConnectionStatus.disconnected:
-        return const Center(child: Text('Not connected to any room'));
-      case LiveKitConnectionStatus.connecting:
-        return const Center(child: CircularProgressIndicator());
-      case LiveKitConnectionStatus.connected:
-        return const Center(child: Text('Connected to room!'));
-      case LiveKitConnectionStatus.error:
-        return const Center(child: Text('An error occurred'));
-    }
   }
 }

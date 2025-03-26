@@ -1,9 +1,10 @@
-import 'dart:io'; // Import for HttpOverrides
+import 'dart:io'; // Used to override HTTP client behavior for development
 import 'package:flutter/material.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart'; // Import Riverpod
-import '../screens/video_room_screen.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart'; // Loads environment variables from .env file
+import 'package:flutter_riverpod/flutter_riverpod.dart'; // State management library
+import 'screens/video_room_screen.dart'; // The main screen for the video room
 
+/// Overrides the default HTTP client to allow insecure connections (for development only)
 class MyHttpOverrides extends HttpOverrides {
   @override
   HttpClient createHttpClient(SecurityContext? context) {
@@ -13,37 +14,38 @@ class MyHttpOverrides extends HttpOverrides {
   }
 }
 
+/// The main entry point of the application
 Future<void> main() async {
   // Allow insecure connections (for development only)
   HttpOverrides.global = MyHttpOverrides();
 
   try {
-    await dotenv.load(
-      fileName:
-          "/Users/dana.gertsch/GitHub/flutter_projects/learn_flutter_webrtc/.env",
-    );
+    // Load environment variables from the .env file
+    await dotenv.load(fileName: ".env");
     print("Environment variables loaded successfully.");
   } catch (e) {
     print("Failed to load environment variables: $e");
   }
 
-  runApp(const ProviderScope(child: MyApp())); // Wrap the app in ProviderScope
+  // Start the app and wrap it in a ProviderScope for state management
+  runApp(const ProviderScope(child: MyApp()));
 }
 
+/// The root widget of the application
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    // Fetch values from .env
+    // Fetch values from the .env file
     final livekitUrl = dotenv.env['LIVEKIT_URL']!;
     final roomName = dotenv.env['LIVEKIT_ROOM_NAME']!;
     final participantName = dotenv.env['LIVEKIT_PARTICIPANT_NAME']!;
     final token = dotenv.env['LIVEKIT_TOKEN']!;
 
     return MaterialApp(
-      title: 'LiveKit Demo',
-      theme: ThemeData(primarySwatch: Colors.blue),
+      title: 'LiveKit Chat',
+      theme: ThemeData(primarySwatch: Colors.blue, useMaterial3: true),
       home: VideoRoomScreen(
         livekitUrl: livekitUrl,
         roomName: roomName,
