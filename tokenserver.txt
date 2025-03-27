@@ -1,0 +1,487 @@
+This guide provides comprehensive instructions for setting up a dedicated LiveKit token server on AWS Ubuntu. This server will generate authentication tokens with consistent room names for WebRTC applications using the LiveKit platform.
+
+Architecture
+The token server serves as an authentication layer between your app and LiveKit's WebRTC infrastructure, allowing you to:
+
+Control room access
+Enforce consistent room names
+Manage user permissions
+Protect your LiveKit API credentials
+Prerequisites
+AWS account with EC2 access
+Domain name (optional but recommended for HTTPS)
+LiveKit API key and secret from your LiveKit account
+Basic familiarity with Linux command line
+
+1. Set Up AWS Ubuntu Instance
+Launch EC2 Instance
+Allocate Elastic IP (optional but recommended)
+Allocate an Elastic IP and associate it with your instance
+This ensures your server keeps the same IP if it's restarted
+Set Up Domain Name (optional but recommended)
+Point a domain/subdomain to your instance (like token.yourdomain.com)
+This is helpful for proper HTTPS setup
+
+2. 
+ssh -i your-key.pem ubuntu@your-instance-ip 
+sudo apt update && sudo apt upgrade -y
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt install -y nodejs 
+sudo apt install -y git nginx certbot python3-certbot-nginx dotenv
+
+3. Create Token Server Application
+npm install livekit-server-sdk
+mkdir -p ~/livekit-token-server
+cd ~/livekit-token-server
+npm init -y
+touch .env
+chmod 600 .env  # Restrict access to this file
+nano .env
+nano server.js
+---
+require('dotenv').config();
+const express = require('express');
+const { AccessToken } = require('livekit-server-sdk');
+const cors = require('cors');
+const helmet = require('helmet');
+
+const app = express();
+const port = process.env.PORT || 3000;
+
+// Security middleware
+app.use(helmet());
+app.use(cors());
+app.use(express.json());
+
+// Validate environment variables
+if (!process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET || !process.env.LIVEKIT_WS_URL) {
+  console.error('Missing required environment variables');
+  process.exit(1);
+}
+
+// Token generation endpoint
+app.post('/token', (req, res) => {
+  try {
+    const { roomName, participantName } = req.body;
+    
+    // Validate request parameters
+    if (!roomName || !participantName) {
+      return res.status(400).json({ error: 'Missing roomName or participantName' });
+    }
+    
+    // Create token with identity and name
+    const token = new AccessToken(
+      process.env.LIVEKIT_API_KEY,
+      process.env.LIVEKIT_API_SECRET,
+      {
+        identity: participantName,
+        name: participantName,
+      }
+    );
+    
+    // Add grants for the room
+    token.addGrant({
+      roomJoin: true,
+      room: roomName,
+      canPublish: true,
+      canSubscribe: true,
+      canPublishData: true,
+    });
+    
+    // Return the token and server info
+    res.json({
+      url: process.env.LIVEKIT_WS_URL,
+      token: token.toJwt(),
+      roomName: roomName,
+      participantName: participantName
+    });
+  } catch (error) {
+    console.error('Error generating token:', error);
+    res.status(500).json({ error: 'Failed to generate token' });
+  }
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy' });
+});
+
+// Start the server
+app.listen(port, () => {
+  console.log(`Token server running on port ${port}`);
+});
+---
+sudo vi /etc/systemd/system/livekit-token-server.service
+---
+[Unit]
+Description=LiveKit Token Server
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/livekit-token-server
+ExecStart=/usr/bin/node /home/ubuntu/livekit-token-server/server.js
+Restart=on-failure
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+--- 
+sudo systemctl enable livekit-token-server
+sudo systemctl start livekit-token-server
+sudo vi /etc/nginx/sites-available/livekit-token-server
+---
+server {
+    listen 80;
+    server_name your-instance-ip-or-domain;
+
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+---
+Enable the site 
+sudo ln -s /etc/nginx/sites-available/livekit-token-server /etc/nginx/sites-enabled/
+sudo nginx -t  # Test configuration
+sudo systemctl restart nginx
+sudo certbot --nginx -d your-domain.com
+or for self signed (not for production)
+sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /etc/ssl/private/nginx-selfsigned.key -out /etc/ssl/certs/nginx-selfsigned.crt
+
+Rate limit
+npm install express-rate-limit
+const rateLimit = require('express-rate-limit');
+
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100 // limit each IP to 100 requests per windowMs
+});
+
+app.use('/token', limiter);
+--- 
+updated server.js with limiting and header authentication
+---
+// Complete server.js file for LiveKit token server
+require('dotenv').config();
+const express = require('express');
+const { AccessToken } = require('livekit-server-sdk');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+
+const app = express();
+const port = process.env.PORT || 3000;
+
+// Security middleware
+app.use(helmet());
+
+// CORS configuration - restrict to specific origins if needed
+const corsOptions = {
+  origin: '*', // For production, change to specific domains: ['https://yourdomain.com']
+  methods: ['POST', 'GET'],
+  allowedHeaders: ['Content-Type', 'x-api-key'],
+};
+app.use(cors(corsOptions));
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  message: { error: 'Too many requests, please try again later' }
+});
+
+// Apply rate limiting to token endpoint
+app.use('/token', limiter);
+
+// Parse JSON bodies
+app.use(express.json());
+
+// Validate environment variables
+if (!process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET || !process.env.LIVEKIT_WS_URL) {
+  console.error('Missing required environment variables');
+  process.exit(1);
+}
+
+// Optional API key middleware
+function validateApiKey(req, res, next) {
+  // Skip API key validation if APP_API_KEY isn't defined
+  if (!process.env.APP_API_KEY) {
+    return next();
+  }
+  
+  const apiKey = req.headers['x-api-key'];
+  if (!apiKey || apiKey !== process.env.APP_API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+
+// Token generation endpoint
+app.post('/token', validateApiKey, (req, res) => {
+  try {
+    const { roomName, participantName } = req.body;
+    
+    // Validate request parameters
+    if (!roomName || !participantName) {
+      return res.status(400).json({ error: 'Missing roomName or participantName' });
+    }
+    
+    // Create token with identity and name (24 hour validity)
+    const token = new AccessToken(
+      process.env.LIVEKIT_API_KEY,
+      process.env.LIVEKIT_API_SECRET,
+      {
+        identity: participantName,
+        name: participantName,
+        ttl: 86400 // 24 hours in seconds
+      }
+    );
+    
+    // Add grants for the room
+    token.addGrant({
+      roomJoin: true,
+      room: roomName,
+      canPublish: true,
+      canSubscribe: true,
+      canPublishData: true,
+    });
+    
+    // Return the token and server info
+    res.json({
+      url: process.env.LIVEKIT_WS_URL,
+      token: token.toJwt(),
+      roomName: roomName,
+      participantName: participantName
+    });
+  } catch (error) {
+    console.error('Error generating token:', error);
+    res.status(500).json({ error: 'Failed to generate token' });
+  }
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy' });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// Start the server
+app.listen(port, () => {
+  console.log(`Token server running on port ${port}`);
+  console.log(`Health check available at: http://localhost:${port}/health`);
+});
+---
+
+LIVEKIT_API_KEY=your_api_key
+LIVEKIT_API_SECRET=your_api_secret
+LIVEKIT_WS_URL=wss://your-livekit-instance.livekit.cloud
+PORT=3000
+# Optional API key for your Flutter app
+APP_API_KEY=your_app_specific_api_key
+
+sudo systemctl restart livekit-token-server
+sudo systemctl status livekit-token-server
+curl -X GET http://localhost:3000/health
+
+sudo ufw allow ssh
+sudo ufw allow http
+sudo ufw allow https
+sudo ufw enable
+
+sudo npm install -g pm2
+pm2 start server.js --name livekit-token-server
+pm2 save
+pm2 startup
+
+# Using systemd
+sudo journalctl -u livekit-token-server -f
+
+# Using PM2
+pm2 logs livekit-token-server
+
+
+sudo apt install unattended-upgrades
+sudo dpkg-reconfigure -plow unattended-upgrades
+
+// Token with 24-hour expiration
+const token = new AccessToken(
+  process.env.LIVEKIT_API_KEY,
+  process.env.LIVEKIT_API_SECRET,
+  {
+    identity: participantName,
+    name: participantName,
+    ttl: 86400, // 24 hours in seconds
+  }
+);
+
+Troubleshooting
+sudo journalctl -u livekit-token-server -n 100
+
+npm install dotenv express livekit-server-sdk cors helmet express-rate-limit
+ls -la node_modules
+sudo systemctl restart livekit-token-server
+sudo systemctl status livekit-token-server
+sudo systemctl status livekit-token-server
+
+curl -X POST -H "Content-Type: application/json" -d '{"roomName": "test-room", "participantName": "test-user"}' http://localhost:3000/token
+
+--- // Updated server.js file for LiveKit token server with async token generation
+require('dotenv').config();
+const express = require('express');
+const { AccessToken } = require('livekit-server-sdk');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+
+const app = express();
+const port = process.env.PORT || 3000;
+
+// Security middleware
+app.use(helmet());
+
+// CORS configuration
+const corsOptions = {
+  origin: '*', // For production, change to specific domains
+  methods: ['POST', 'GET'],
+  allowedHeaders: ['Content-Type', 'x-api-key'],
+};
+app.use(cors(corsOptions));
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later' }
+});
+
+app.use('/token', limiter);
+app.use(express.json());
+
+// Validate environment variables
+if (!process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET || !process.env.LIVEKIT_WS_URL) {
+  console.error('Missing required environment variables');
+  process.exit(1);
+}
+
+// API key middleware
+function validateApiKey(req, res, next) {
+  if (!process.env.APP_API_KEY) {
+    console.log('No APP_API_KEY defined, skipping validation');
+    return next();
+  }
+  
+  const apiKey = req.headers['x-api-key'];
+  if (!apiKey || apiKey !== process.env.APP_API_KEY) {
+    console.log('API key validation failed');
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  console.log('API key validation passed');
+  next();
+}
+
+// Token generation endpoint
+app.post('/token', validateApiKey, async (req, res) => {
+  try {
+    console.log('Token request received');
+    const { roomName, participantName } = req.body;
+    
+    if (!roomName || !participantName) {
+      return res.status(400).json({ error: 'Missing roomName or participantName' });
+    }
+    
+    console.log(`Creating token for: ${participantName} in room: ${roomName}`);
+    
+    // Create token with identity and name
+    const token = new AccessToken(
+      process.env.LIVEKIT_API_KEY,
+      process.env.LIVEKIT_API_SECRET,
+      {
+        identity: participantName,
+        name: participantName,
+        ttl: 86400 // 24 hours in seconds
+      }
+    );
+    
+    console.log('Access token created');
+    
+    // Add grants for the room
+    token.addGrant({
+      roomJoin: true,
+      room: roomName,
+      canPublish: true,
+      canSubscribe: true,
+      canPublishData: true,
+    });
+    
+    console.log('Grants added to token');
+    
+    // Handle async token generation
+    let jwt;
+    try {
+      // Use await to resolve the promise
+      jwt = await token.toJwt();
+      console.log(`JWT generated successfully (length: ${jwt.length})`);
+    } catch (jwtError) {
+      console.error('JWT generation error:', jwtError);
+      throw jwtError;
+    }
+    
+    // Return the token and server info
+    const response = {
+      url: process.env.LIVEKIT_WS_URL,
+      token: jwt,
+      roomName: roomName,
+      participantName: participantName
+    };
+    
+    console.log('Sending response');
+    res.json(response);
+  } catch (error) {
+    console.error('Error generating token:', error);
+    res.status(500).json({ 
+      error: 'Failed to generate token', 
+      details: error.message
+    });
+  }
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'healthy',
+    env: {
+      LIVEKIT_API_KEY_present: !!process.env.LIVEKIT_API_KEY,
+      LIVEKIT_API_SECRET_present: !!process.env.LIVEKIT_API_SECRET,
+      LIVEKIT_WS_URL_present: !!process.env.LIVEKIT_WS_URL
+    }
+  });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// Start the server
+app.listen(port, () => {
+  console.log(`Token server running on port ${port}`);
+  console.log(`Health check available at: http://localhost:${port}/health`);
+});
+
+---

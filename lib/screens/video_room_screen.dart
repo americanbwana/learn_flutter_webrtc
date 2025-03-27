@@ -1,37 +1,22 @@
-import 'package:flutter/material.dart'; // Provides UI components
-import 'package:flutter_riverpod/flutter_riverpod.dart'; // State management library
-import '../providers/livekit_provider.dart'; // Manages LiveKit connection and state
-import '../providers/message_provider.dart'; // Manages messages sent and received in the room
-import '../models/room_config.dart'; // Configuration for connecting to a LiveKit room
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../providers/livekit_provider.dart';
+import '../providers/message_provider.dart';
+import '../models/room_config.dart';
+import '../services/token_service.dart';
+import '../models/livekit_connection_details.dart';
 
-/// The main screen for the LiveKit video room.
-/// This screen allows users to connect to a room, send/receive messages, and view the connection status.
 class VideoRoomScreen extends ConsumerStatefulWidget {
-  final String livekitUrl; // The URL of the LiveKit server
-  final String roomName; // The name of the room to join
-  final String participantName; // The name of the participant
-  final String token; // The JWT token for authentication
-
-  /// Constructor for the VideoRoomScreen.
-  const VideoRoomScreen({
-    super.key,
-    required this.livekitUrl,
-    required this.roomName,
-    required this.participantName,
-    required this.token,
-  });
+  // Remove parameters since we'll get them from the token service
+  const VideoRoomScreen({super.key});
 
   @override
   ConsumerState<VideoRoomScreen> createState() => _VideoRoomScreenState();
 }
 
-/// The state for the VideoRoomScreen.
-/// Manages the UI and interactions for the video room.
 class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
-  final TextEditingController _messageController =
-      TextEditingController(); // Controller for the message input field
-  final ScrollController _scrollController =
-      ScrollController(); // Controller for the scrolling message list
+  final TextEditingController _messageController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
 
   @override
   void dispose() {
@@ -40,7 +25,7 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
     super.dispose();
   }
 
-  /// Sends a message via the LiveKit data channel.
+  /// Sends a message via the LiveKit data channel
   void _sendMessage() {
     final message = _messageController.text.trim();
     if (message.isNotEmpty) {
@@ -68,18 +53,15 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final connectionStatus = ref.watch(
-      connectionStatusProvider,
-    ); // Watches the connection status
-    final errorMessage = ref.watch(
-      errorMessageProvider,
-    ); // Watches for error messages
+    final connectionStatus = ref.watch(connectionStatusProvider);
+    final errorMessage = ref.watch(errorMessageProvider);
+    final connectionDetailsAsync = ref.watch(connectionDetailsProvider);
 
-    // Listen for changes to the list of messages to scroll to bottom
+    // Listen for changes to the messages list to scroll to bottom
     ref.listen<List<String>>(messagesProvider, (previous, current) {
       if (current.isNotEmpty &&
           (previous == null || current.length > previous.length)) {
-        // A new message was added, scroll to the bottom after the UI updates
+        // A new message was added, scroll to bottom after frame is rendered
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (_scrollController.hasClients) {
             _scrollController.animateTo(
@@ -94,13 +76,18 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          _getTitleForStatus(connectionStatus),
-        ), // Displays the connection status
+        title: Text(_getTitleForStatus(connectionStatus)),
         actions: [
-          _buildConnectionButton(
-            connectionStatus,
-          ), // Displays the connect/disconnect button
+          connectionDetailsAsync.when(
+            data:
+                (details) => _buildConnectionButton(connectionStatus, details),
+            loading: () => const CircularProgressIndicator(),
+            error:
+                (error, _) => Tooltip(
+                  message: 'Error: $error',
+                  child: const Icon(Icons.error_outline, color: Colors.red),
+                ),
+          ),
         ],
       ),
       body: Column(
@@ -115,12 +102,58 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
                 style: const TextStyle(color: Colors.red),
               ),
             ),
+          connectionDetailsAsync.when(
+            data: (_) => _buildChatInterface(),
+            loading:
+                () => const Expanded(
+                  child: Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircularProgressIndicator(),
+                        SizedBox(height: 16),
+                        Text('Fetching connection details...'),
+                      ],
+                    ),
+                  ),
+                ),
+            error:
+                (error, _) => Expanded(
+                  child: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Text(
+                        'Failed to get connection details: $error',
+                        style: const TextStyle(color: Colors.red),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ),
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildChatInterface() {
+    final connectionDetailsAsync = ref.watch(connectionDetailsProvider);
+
+    return Expanded(
+      child: Column(
+        children: [
+          // Connection info header
+          connectionDetailsAsync.when(
+            data: (details) => _buildConnectionInfoHeader(details),
+            loading: () => Container(),
+            error: (_, __) => Container(),
+          ),
+
+          // Messages list
           Expanded(
             child: Consumer(
               builder: (context, ref, _) {
-                final messages = ref.watch(
-                  messagesProvider,
-                ); // Watch the messages list
+                final messages = ref.watch(messagesProvider);
 
                 if (messages.isEmpty) {
                   return const Center(
@@ -144,6 +177,8 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
               },
             ),
           ),
+
+          // Message input area
           Padding(
             padding: const EdgeInsets.all(8.0),
             child: Row(
@@ -171,7 +206,27 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
     );
   }
 
-  /// Returns the appropriate title based on the connection status.
+  Widget _buildConnectionInfoHeader(LivekitConnectionDetails details) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(8.0),
+      decoration: BoxDecoration(
+        color: Colors.blue.shade100,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Room: ${details.roomName}',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          Text('Connected as: ${details.participantName}'),
+        ],
+      ),
+    );
+  }
+
   String _getTitleForStatus(LiveKitConnectionStatus status) {
     switch (status) {
       case LiveKitConnectionStatus.disconnected:
@@ -185,8 +240,10 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
     }
   }
 
-  /// Builds the connect/disconnect button based on the connection status.
-  Widget _buildConnectionButton(LiveKitConnectionStatus status) {
+  Widget _buildConnectionButton(
+    LiveKitConnectionStatus status,
+    LivekitConnectionDetails details,
+  ) {
     if (status == LiveKitConnectionStatus.connecting) {
       return const IconButton(
         onPressed: null,
@@ -206,10 +263,10 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
     return IconButton(
       onPressed: () {
         final config = RoomConfig(
-          url: widget.livekitUrl,
-          token: widget.token,
-          roomName: widget.roomName,
-          userName: widget.participantName,
+          url: details.url,
+          token: details.token,
+          roomName: details.roomName,
+          userName: details.participantName,
         );
 
         ref.read(liveKitProvider.notifier).connectToRoom(config);

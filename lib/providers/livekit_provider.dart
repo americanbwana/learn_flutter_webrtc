@@ -1,4 +1,4 @@
-import 'dart:typed_data'; // Required for Uint8List
+// Required for Uint8List
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:livekit_client/livekit_client.dart';
 import '../models/room_config.dart';

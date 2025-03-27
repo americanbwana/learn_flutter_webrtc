@@ -37,21 +37,10 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Fetch values from the .env file
-    final livekitUrl = dotenv.env['LIVEKIT_URL']!;
-    final roomName = dotenv.env['LIVEKIT_ROOM_NAME']!;
-    final participantName = dotenv.env['LIVEKIT_PARTICIPANT_NAME']!;
-    final token = dotenv.env['LIVEKIT_TOKEN']!;
-
     return MaterialApp(
       title: 'LiveKit Chat',
       theme: ThemeData(primarySwatch: Colors.blue, useMaterial3: true),
-      home: VideoRoomScreen(
-        livekitUrl: livekitUrl,
-        roomName: roomName,
-        participantName: participantName,
-        token: token,
-      ),
+      home: const VideoRoomScreen(),
     );
   }
 }
