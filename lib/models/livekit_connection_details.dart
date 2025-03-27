@@ -1,19 +1,14 @@
-import 'package:freezed_annotation/freezed_annotation.dart';
-
-// part 'livekit_connection_details.freezed.dart';
-// part 'livekit_connection_details.g.dart';
-
 /// Holds connection details returned from the LiveKit API
 class LivekitConnectionDetails {
   /// The LiveKit server URL
   final String url;
-  
+
   /// Authentication token for connecting to the room
   final String token;
-  
+
   /// Name of the room to join
   final String roomName;
-  
+
   /// Display name for the participant
   final String participantName;
 
