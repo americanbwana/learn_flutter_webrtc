@@ -9,6 +9,8 @@ When combined with the server side of the application, removes the requirement t
 By developing with Flutter the intent is to have a single code base for the most common operating systems, and remote devices.
 Since it may run on a mobile device (Phone) we are keeping the interface very simple, only focusing on SSB for the time being.  There simply isn't enough room on the screen for much else.
 
+![Alpha Screenshot](screenshots/basicFrequencyControl.png)
+
 ## Getting Started
 
 ### Dependencies

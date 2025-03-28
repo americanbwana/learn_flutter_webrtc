@@ -5,9 +5,15 @@ import '../providers/message_provider.dart';
 import '../models/room_config.dart';
 import '../services/token_service.dart';
 import '../models/livekit_connection_details.dart';
+import '../widgets/frequency_control.dart'; // Import the new widget
 
+/// The main screen for the video room and radio control interface
+///
+/// This screen handles:
+/// 1. Connection to the LiveKit room
+/// 2. Sending/receiving messages via the data channel
+/// 3. Radio frequency control via CAT commands
 class VideoRoomScreen extends ConsumerStatefulWidget {
-  // Remove parameters since we'll get them from the token service
   const VideoRoomScreen({super.key});
 
   @override
@@ -15,8 +21,14 @@ class VideoRoomScreen extends ConsumerStatefulWidget {
 }
 
 class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
+  /// Controller for the message input text field
   final TextEditingController _messageController = TextEditingController();
+
+  /// Controller for the message list scrolling
   final ScrollController _scrollController = ScrollController();
+
+  /// The last received or sent frequency command
+  String _lastFrequencyCommand = 'FA00014050000;';
 
   @override
   void dispose() {
@@ -26,6 +38,13 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
   }
 
   /// Sends a message via the LiveKit data channel
+  ///
+  /// This method:
+  /// 1. Checks if the message is not empty
+  /// 2. Sends it via the data channel
+  /// 3. Adds it to the local messages list
+  /// 4. Clears the input field
+  /// 5. Scrolls the message list to the bottom
   void _sendMessage() {
     final message = _messageController.text.trim();
     if (message.isNotEmpty) {
@@ -39,16 +58,72 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
       _messageController.clear();
 
       // Scroll to the bottom
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_scrollController.hasClients) {
-          _scrollController.animateTo(
-            _scrollController.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOut,
-          );
-        }
+      _scrollToBottom();
+
+      // Check if this is a frequency command and update the local state
+      if (message.startsWith('FA') && message.endsWith(';')) {
+        setState(() {
+          _lastFrequencyCommand = message;
+        });
+      }
+    }
+  }
+
+  /// Sends a frequency command via the data channel
+  ///
+  /// This is a specialized version of _sendMessage for frequency commands
+  /// [command] The FA command to send (e.g., "FA00014050000;")
+  void _sendFrequencyCommand(String command) {
+    // Only process valid FA commands
+    if (command.startsWith('FA') && command.endsWith(';')) {
+      // Send the command via the data channel
+      ref.read(liveKitProvider.notifier).sendDataToRoom(command);
+
+      // Add the command to the local messages list with a user-friendly format
+      final formattedMsg = _formatFrequencyForDisplay(command);
+      ref
+          .read(messagesProvider.notifier)
+          .addMessage("You set frequency: $formattedMsg");
+
+      // Update the local state
+      setState(() {
+        _lastFrequencyCommand = command;
       });
     }
+  }
+
+  /// Converts an FA command to a human-readable frequency string
+  ///
+  /// [command] An FA command (e.g., "FA00014050000;")
+  /// Returns a formatted string (e.g., "14.050.000 MHz")
+  String _formatFrequencyForDisplay(String command) {
+    if (command.startsWith('FA') && command.endsWith(';')) {
+      final numericPart = command.substring(2, command.length - 1);
+      try {
+        final frequency = int.parse(numericPart);
+        final mhz = (frequency / 1000000).floor();
+        final khz = ((frequency % 1000000) / 1000).floor();
+        final hz = frequency % 1000;
+
+        return '$mhz.${khz.toString().padLeft(3, '0')}.${hz.toString().padLeft(3, '0')} MHz';
+      } catch (e) {
+        return command;
+      }
+    }
+    return command;
+  }
+
+  /// Scrolls the message list to the bottom
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
   }
 
   @override
@@ -61,16 +136,33 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
     ref.listen<List<String>>(messagesProvider, (previous, current) {
       if (current.isNotEmpty &&
           (previous == null || current.length > previous.length)) {
-        // A new message was added, scroll to bottom after frame is rendered
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (_scrollController.hasClients) {
-            _scrollController.animateTo(
-              _scrollController.position.maxScrollExtent,
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeOut,
-            );
+        _scrollToBottom();
+      }
+    });
+
+    // Listen for incoming messages that might contain frequency commands
+    ref.listen<List<String>>(messagesProvider, (previous, next) {
+      if (next.isNotEmpty &&
+          previous != null &&
+          next.length > previous.length) {
+        // Get the latest message
+        final latestMessage = next.last;
+
+        // If it's a received message (not from us) and it's a frequency command
+        if (!latestMessage.startsWith("You:") &&
+            latestMessage.contains("FA") &&
+            latestMessage.contains(";")) {
+          // Extract the FA command - this is a simple approach that assumes the command is well-formed
+          final commandStart = latestMessage.indexOf("FA");
+          final commandEnd = latestMessage.indexOf(";", commandStart) + 1;
+
+          if (commandStart >= 0 && commandEnd > commandStart) {
+            final command = latestMessage.substring(commandStart, commandEnd);
+            setState(() {
+              _lastFrequencyCommand = command;
+            });
           }
-        });
+        }
       }
     });
 
@@ -103,7 +195,7 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
               ),
             ),
           connectionDetailsAsync.when(
-            data: (_) => _buildChatInterface(),
+            data: (_) => _buildMainInterface(),
             loading:
                 () => const Expanded(
                   child: Center(
@@ -136,7 +228,8 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
     );
   }
 
-  Widget _buildChatInterface() {
+  /// Builds the main interface with the frequency control and message input
+  Widget _buildMainInterface() {
     final connectionDetailsAsync = ref.watch(connectionDetailsProvider);
 
     return Expanded(
@@ -149,33 +242,48 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
             error: (_, __) => Container(),
           ),
 
-          // Messages list
+          // Frequency control section
           Expanded(
-            child: Consumer(
-              builder: (context, ref, _) {
-                final messages = ref.watch(messagesProvider);
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: FrequencyControl(
+                initialValue: _lastFrequencyCommand,
+                onFrequencyChanged: _sendFrequencyCommand,
+              ),
+            ),
+          ),
 
-                if (messages.isEmpty) {
-                  return const Center(
-                    child: Text('No messages yet. Start a conversation!'),
-                  );
-                }
+          // Message log toggle - shows a condensed view of the message history
+          ExpansionTile(
+            title: const Text('Message Log'),
+            children: [
+              SizedBox(
+                height: 150,
+                child: Consumer(
+                  builder: (context, ref, _) {
+                    final messages = ref.watch(messagesProvider);
 
-                return ListView.builder(
-                  controller: _scrollController,
-                  itemCount: messages.length,
-                  itemBuilder: (context, index) {
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(
-                        vertical: 4,
-                        horizontal: 8,
-                      ),
-                      child: Text(messages[index]),
+                    if (messages.isEmpty) {
+                      return const Center(child: Text('No messages yet.'));
+                    }
+
+                    return ListView.builder(
+                      controller: _scrollController,
+                      itemCount: messages.length,
+                      itemBuilder: (context, index) {
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(
+                            vertical: 4,
+                            horizontal: 8,
+                          ),
+                          child: Text(messages[index]),
+                        );
+                      },
                     );
                   },
-                );
-              },
-            ),
+                ),
+              ),
+            ],
           ),
 
           // Message input area
@@ -187,7 +295,7 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
                   child: TextField(
                     controller: _messageController,
                     decoration: const InputDecoration(
-                      hintText: "Enter your message",
+                      hintText: "Enter command or message",
                       border: OutlineInputBorder(),
                     ),
                     onSubmitted: (_) => _sendMessage(),
@@ -206,6 +314,7 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
     );
   }
 
+  /// Builds the connection info header showing room and user details
   Widget _buildConnectionInfoHeader(LivekitConnectionDetails details) {
     return Container(
       width: double.infinity,
@@ -227,6 +336,7 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
     );
   }
 
+  /// Returns the appropriate title based on connection status
   String _getTitleForStatus(LiveKitConnectionStatus status) {
     switch (status) {
       case LiveKitConnectionStatus.disconnected:
@@ -240,6 +350,7 @@ class _VideoRoomScreenState extends ConsumerState<VideoRoomScreen> {
     }
   }
 
+  /// Builds the appropriate connection button based on current status
   Widget _buildConnectionButton(
     LiveKitConnectionStatus status,
     LivekitConnectionDetails details,
