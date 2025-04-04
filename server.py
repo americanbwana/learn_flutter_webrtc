@@ -6,11 +6,11 @@ def generate_token():
     token = api.AccessToken(
         os.getenv('LIVEKIT_API_KEY'),
         os.getenv('LIVEKIT_API_SECRET')
-    ).with_identity("dgertsch") \
-     .with_name("Dana") \
+    ).with_identity("yourId") \
+     .with_name("yourName") \
      .with_grants(api.VideoGrants(
          room_join=True,
-         room="NN0G-room",
+         room="YourRoom",
      ))
     return token.to_jwt()
 
